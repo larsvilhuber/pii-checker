@@ -41,3 +41,15 @@ def test_parse_model_choice_empty_without_current_is_invalid():
 def test_parse_model_choice_rejects_out_of_range_and_unknown():
     assert _parse_model_choice("9", ["a", "b"], current="a") is None
     assert _parse_model_choice("zzz", ["a", "b"], current="a") is None
+
+
+def test_resolve_folder_returns_existing_dir(tmp_path):
+    from interface import _resolve_folder
+    assert _resolve_folder(str(tmp_path)) == str(tmp_path)
+
+
+def test_resolve_folder_exits_on_non_dir(tmp_path):
+    import pytest
+    from interface import _resolve_folder
+    with pytest.raises(SystemExit):
+        _resolve_folder(str(tmp_path / "nope"))

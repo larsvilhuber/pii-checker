@@ -7,7 +7,11 @@
 # auto-discovers package subfolders and maintains a resumable overview/
 # status file (pii_results_overview.xlsx) in that folder.
 # Each package gets its own pii_check.xlsx saved inside its own folder.
+#
+# The folder can be given as an optional positional argument to skip the
+# folder prompt:  python interface.py /path/to/folder
 
+import argparse
 import os
 import sys
 
@@ -83,12 +87,26 @@ def _ask_folder():
         print(f"Not a valid folder: {folder}")
 
 
+def _resolve_folder(folder):
+    """Validates a folder given on the command line; exits if it is not a directory."""
+    if not os.path.isdir(folder):
+        logger.error("Not a valid folder: %s", folder)
+        sys.exit(1)
+    return folder
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Interactive PII check of one package or a folder of packages.")
+    parser.add_argument("folder", nargs="?", help="package folder (single) or folder of packages (many); prompted for if omitted")
+    args = parser.parse_args()
+    folder = _resolve_folder(args.folder) if args.folder else None  # fail fast on a bad path
+
     model = _ask_model() if DEFAULT_PROVIDER == 'ollama' else DEFAULT_MODEL
     _check_dependencies(model=model)
 
     mode = _ask_mode()
-    folder = _ask_folder()
+    if folder is None:
+        folder = _ask_folder()
 
     if mode == '1':
         packages = [folder]
