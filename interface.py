@@ -8,8 +8,13 @@
 # status file (pii_results_overview.xlsx) in that folder.
 # Each package gets its own pii_check.xlsx saved inside its own folder.
 #
-# The folder can be given as an optional positional argument to skip the
-# folder prompt:  python interface.py /path/to/folder
+# Command line:
+#   python interface.py [folder] [--model [NAME]]
+# folder        runs that single package with no prompts (use --many for a
+#               folder of packages)
+# --model       shows a chooser of models pulled on the Ollama endpoint
+# --model NAME  uses NAME without prompting
+# Without --model the LLM_MODEL from config.env is used.
 
 import argparse
 import os
@@ -20,6 +25,9 @@ from llm_client import (
     DEFAULT_PROVIDER, DEFAULT_MODEL, OLLAMA_ENDPOINTS,
     check_ollama_reachable, list_ollama_models, save_model_to_config,
 )
+
+
+_CHOOSE = object()  # sentinel: --model given without a name
 
 
 def _parse_model_choice(answer, models, current):
@@ -89,6 +97,7 @@ def _ask_folder():
 
 def _resolve_folder(folder):
     """Validates a folder given on the command line; exits if it is not a directory."""
+    folder = os.path.abspath(os.path.expanduser(folder.strip().strip('"')))
     if not os.path.isdir(folder):
         logger.error("Not a valid folder: %s", folder)
         sys.exit(1)
@@ -97,16 +106,30 @@ def _resolve_folder(folder):
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive PII check of one package or a folder of packages.")
-    parser.add_argument("folder", nargs="?", help="package folder (single) or folder of packages (many); prompted for if omitted")
+    parser.add_argument("folder", nargs="?", help="package folder to check (prompted for if omitted)")
+    parser.add_argument("--many", action="store_true", help="treat FOLDER as a folder of packages instead of a single package")
+    parser.add_argument("--model", nargs="?", const=_CHOOSE, default=None, metavar="NAME",
+                        help="Ollama model to use; with no NAME, pick from the models on the endpoint. "
+                             "Default: LLM_MODEL from config.env")
     args = parser.parse_args()
+    if args.folder is None and isinstance(args.model, str) and os.path.isdir(os.path.expanduser(args.model)):
+        # "interface.py --model /path" — argparse took the folder as the model name
+        args.folder, args.model = args.model, _CHOOSE
     folder = _resolve_folder(args.folder) if args.folder else None  # fail fast on a bad path
 
-    model = _ask_model() if DEFAULT_PROVIDER == 'ollama' else DEFAULT_MODEL
+    if args.model == _CHOOSE and DEFAULT_PROVIDER == 'ollama':
+        model = _ask_model()
+    elif args.model and args.model != _CHOOSE:
+        model = args.model
+    else:
+        model = DEFAULT_MODEL
     _check_dependencies(model=model)
 
-    mode = _ask_mode()
     if folder is None:
+        mode = _ask_mode()
         folder = _ask_folder()
+    else:
+        mode = '2' if args.many else '1'
 
     if mode == '1':
         packages = [folder]
