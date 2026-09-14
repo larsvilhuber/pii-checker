@@ -16,10 +16,13 @@ import re
 logger = logging.getLogger(__name__)
 
 
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.env')
+
+
 def _load_env_file(path=None):
     """Loads KEY=VALUE lines from config.env into os.environ (without overriding
     variables already set in the real environment)."""
-    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.env')
+    path = path or CONFIG_PATH
     if not os.path.exists(path):
         return
     with open(path) as f:
@@ -32,6 +35,29 @@ def _load_env_file(path=None):
 
 
 _load_env_file()
+
+
+def save_model_to_config(model: str, path: str = None) -> None:
+    """Rewrites the LLM_MODEL= line in config.env in place (comments and other
+    lines untouched); appends the line if the file has none."""
+    path = path or CONFIG_PATH
+    lines = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.readlines()
+
+    new_line = f"LLM_MODEL={model}\n"
+    for i, line in enumerate(lines):
+        if line.strip().startswith('LLM_MODEL='):
+            lines[i] = new_line
+            break
+    else:
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        lines.append(new_line)
+
+    with open(path, 'w') as f:
+        f.writelines(lines)
 
 OLLAMA_ENDPOINTS = [
     e.strip() for e in os.environ.get('OLLAMA_ENDPOINTS', 'http://localhost:11434').split(',')
@@ -73,21 +99,29 @@ def check_ollama_reachable(timeout: int = 10) -> bool:
         return False
 
 
-def check_model_available(model: str = DEFAULT_MODEL, timeout: int = 10) -> bool:
-    """Checks that the given model is actually pulled on the configured Ollama endpoint.
-    Fast — lists installed models, does not run inference."""
+def list_ollama_models(timeout: int = 10) -> list[str] | None:
+    """Returns the names of all models pulled on the configured Ollama endpoint,
+    or None if the endpoint could not be queried. Fast — does not run inference."""
     import requests
 
     if not OLLAMA_ENDPOINTS:
-        return False
+        return None
 
     endpoint = OLLAMA_ENDPOINTS[0]
     try:
         response = requests.get(f"{endpoint}/api/tags", headers={"X-API-Key": OLLAMA_API_KEY}, timeout=timeout)
         response.raise_for_status()
-        available = [m.get("name") or m.get("model") for m in response.json().get("models", [])]
+        return [m.get("name") or m.get("model") for m in response.json().get("models", [])]
     except requests.exceptions.RequestException as e:
         logger.error("Could not list models at %s: %s", endpoint, e)
+        return None
+
+
+def check_model_available(model: str = DEFAULT_MODEL, timeout: int = 10) -> bool:
+    """Checks that the given model is actually pulled on the configured Ollama endpoint.
+    Fast — lists installed models, does not run inference."""
+    available = list_ollama_models(timeout)
+    if available is None:
         return False
 
     if model in available:
@@ -95,7 +129,7 @@ def check_model_available(model: str = DEFAULT_MODEL, timeout: int = 10) -> bool
 
     logger.error(
         "Model '%s' is not pulled on %s — available models: %s",
-        model, endpoint, ", ".join(available) or "none"
+        model, OLLAMA_ENDPOINTS[0], ", ".join(available) or "none"
     )
     return False
 

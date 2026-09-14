@@ -119,7 +119,7 @@ You just need to run `interface.py` — it's an interactive command-line script,
 - **From a terminal:** `python interface.py`
 - **From PyCharm (or any IDE):** open the project, then right-click `interface.py` → Run
 
-On startup it verifies your LLM setup is actually working (Ollama reachable, model pulled, and a live test call succeeds) before asking anything else. If that check fails, fix the reported issue (start Ollama, pull the model, fix `config.env`, etc.) and run it again.
+On startup (with `LLM_PROVIDER=ollama`) it lists the models pulled on your Ollama endpoint and asks which one to use — press Enter to keep the one in `config.env`, or type a number/name to switch. If you switch, it asks whether to save the choice to `config.env` (permanent) or use it for this session only. It then verifies the setup is actually working (a live test call succeeds) before asking anything else. If that check fails, fix the reported issue (start Ollama, pull the model, fix `config.env`, etc.) and run it again.
 
 <h2 id="usage">Usage</h2>
 
