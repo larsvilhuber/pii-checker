@@ -9,7 +9,7 @@
 #                      file (pii_results_overview.xlsx) in that folder
 #
 # Pipeline per package (run_package):
-#   0. Record archive info (MD5, size) before unzipping
+#   0. Record archive info (SHA-256, size) before unzipping
 #   1. Unzip any archive files in the folder
 #   2. Clean junk files
 #   3. Build file list and find duplicates
@@ -50,7 +50,6 @@ def _check_core_packages():
 _check_core_packages()
 
 import shutil
-import hashlib
 import tempfile
 import datetime
 import time
@@ -59,7 +58,7 @@ from loader import load_data
 from column_filter import is_candidate_column
 from column_checker import check_column, sanitize_for_excel
 from unzip_package import unzip_folder, _get_handler
-from find_duplicities import find_duplicities
+from find_duplicities import find_duplicities, sha256_file
 from clean_package import clean_folder
 from llm_client import DEFAULT_PROVIDER, DEFAULT_MODEL
 
@@ -152,16 +151,8 @@ class ThroughputTracker:
             logger.warning("Could not write throughput log (file open?) — will retry on next update")
 
 
-def _md5_file(file_path, chunk_size=8192) -> str:
-    h = hashlib.md5()
-    with open(file_path, 'rb') as f:
-        while chunk := f.read(chunk_size):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _get_archive_info(folder_path) -> dict:
-    """Records MD5 and size of top-level archive files before extraction."""
+    """Records SHA-256 and size of top-level archive files before extraction."""
     archives = [
         os.path.join(folder_path, f)
         for f in os.listdir(folder_path)
@@ -170,18 +161,18 @@ def _get_archive_info(folder_path) -> dict:
         and not f.startswith('._')
     ]
 
-    names, sizes, md5s = [], [], []
+    names, sizes, digests = [], [], []
     for path in archives:
         name = os.path.basename(path)
         logger.info("Hashing archive: %s", name)
         names.append(name)
         sizes.append(round(os.path.getsize(path) / 1024 / 1024, 2))
-        md5s.append(_md5_file(path))
+        digests.append(sha256_file(path))
 
     return {
         'archive_files'    : '; '.join(names),
         'archive_sizes_mb' : '; '.join(str(s) for s in sizes),
-        'archive_md5s'     : '; '.join(md5s),
+        'archive_sha256s'  : '; '.join(digests),
     }
 
 
@@ -489,7 +480,7 @@ def _save_overview(df, primary_path, max_fallbacks=5):
 
 
 _OVERVIEW_SUMMARY_COLUMNS = [
-    'archive_files', 'archive_sizes_mb', 'archive_md5s',
+    'archive_files', 'archive_sizes_mb', 'archive_sha256s',
     'n_files_total', 'n_data_files', 'n_duplicates', 'n_checked',
     'n_direct_pii', 'n_indirect', 'n_internal_id', 'n_warnings', 'n_errors',
     'model', 'run_date', 'output_path',
@@ -523,7 +514,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
                  - terminal error states
 
     Columns: package_path, status, notes, plus every key in run_package's
-    returned summary dict (archive_files, archive_sizes_mb, archive_md5s,
+    returned summary dict (archive_files, archive_sizes_mb, archive_sha256s,
     n_files_total, n_data_files, n_duplicates, n_checked, n_direct_pii,
     n_indirect, n_internal_id, n_warnings, n_errors, model, run_date,
     output_path).

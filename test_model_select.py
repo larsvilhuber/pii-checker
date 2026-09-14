@@ -53,3 +53,12 @@ def test_resolve_folder_exits_on_non_dir(tmp_path):
     from interface import _resolve_folder
     with pytest.raises(SystemExit):
         _resolve_folder(str(tmp_path / "nope"))
+
+
+def test_sha256_file_matches_hashlib(tmp_path):
+    import hashlib
+    from find_duplicities import sha256_file
+    f = tmp_path / "data.bin"
+    f.write_bytes(b"hello world" * 5000)  # spans several read chunks
+    assert sha256_file(str(f)) == hashlib.sha256(f.read_bytes()).hexdigest()
+    assert len(sha256_file(str(f))) == 64
