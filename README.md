@@ -1,5 +1,7 @@
 # PII Checker
 
+Version: see [`version.py`](version.py) (`python interface.py --version`).
+
 Replication packages shared alongside published research sometimes contain personally identifiable information (PII) that was never intended for publication. PII Checker helps researchers, data editors, and repositories scan replication packages for direct PII to help mitigate such unintended disclosure before publication.
 
 This is the **local, run-it-yourself version**: a command-line tool that searches research replication packages (data files in a folder or archive) for columns that may contain PII, using an LLM to evaluate each candidate column.

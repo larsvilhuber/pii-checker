@@ -59,6 +59,7 @@ from column_filter import is_candidate_column
 from column_checker import check_column, sanitize_for_excel
 from unzip_package import unzip_folder, _get_handler
 from find_duplicities import find_duplicities, sha256_file
+from version import __version__
 from clean_package import clean_folder
 from llm_client import DEFAULT_PROVIDER, DEFAULT_MODEL
 
@@ -391,6 +392,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             'n_warnings'    : sum(1 for i in issue_collector.issues if i['level'] == 'WARNING'),
             'n_errors'      : sum(1 for i in issue_collector.issues if i['level'] == 'ERROR'),
             'model'         : f"{provider}/{model}",
+            'version'       : __version__,
             'run_date'      : datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
             'output_path'   : output_path,
         }
@@ -483,7 +485,7 @@ _OVERVIEW_SUMMARY_COLUMNS = [
     'archive_files', 'archive_sizes_mb', 'archive_sha256s',
     'n_files_total', 'n_data_files', 'n_duplicates', 'n_checked',
     'n_direct_pii', 'n_indirect', 'n_internal_id', 'n_warnings', 'n_errors',
-    'model', 'run_date', 'output_path',
+    'model', 'version', 'run_date', 'output_path',
 ]
 _OVERVIEW_COLUMNS = ['package_path', 'status', 'notes'] + _OVERVIEW_SUMMARY_COLUMNS
 
@@ -516,7 +518,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     Columns: package_path, status, notes, plus every key in run_package's
     returned summary dict (archive_files, archive_sizes_mb, archive_sha256s,
     n_files_total, n_data_files, n_duplicates, n_checked, n_direct_pii,
-    n_indirect, n_internal_id, n_warnings, n_errors, model, run_date,
+    n_indirect, n_internal_id, n_warnings, n_errors, model, version, run_date,
     output_path).
 
     'notes' is a free-text column, never written by this function — purely

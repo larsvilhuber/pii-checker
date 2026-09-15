@@ -23,6 +23,7 @@ import os
 import sys
 
 from main import _check_dependencies, run_package, run_folder, logger, _rmtree_retrying
+from version import __version__
 from llm_client import (
     DEFAULT_PROVIDER, DEFAULT_MODEL, OLLAMA_ENDPOINTS,
     check_ollama_reachable, list_ollama_models, save_model_to_config, unload_ollama_model,
@@ -115,7 +116,9 @@ def main():
                              "Default: LLM_MODEL from config.env")
     parser.add_argument("--continue", dest="keep_loaded", action="store_true",
                         help="keep the model loaded in Ollama after this run (default: unload it at the end)")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
+    logger.info("PII Checker %s", __version__)
     if args.folder is None and isinstance(args.model, str) and os.path.isdir(os.path.expanduser(args.model)):
         # "interface.py --model /path" — argparse took the folder as the model name
         args.folder, args.model = args.model, _CHOOSE

@@ -95,3 +95,15 @@ def test_unload_ollama_model_returns_false_on_error(monkeypatch):
     monkeypatch.setattr(llm_client, "OLLAMA_ENDPOINTS", ["http://ollama.test:11434"])
     monkeypatch.setattr(requests, "post", _boom)
     assert unload_ollama_model("gemma4:e4b") is False
+
+
+def test_version_flag_prints_version(capsys):
+    import pytest
+    import sys
+    import interface
+    from version import __version__
+    sys.argv = ["interface.py", "--version"]
+    with pytest.raises(SystemExit) as e:
+        interface.main()
+    assert e.value.code == 0
+    assert capsys.readouterr().out.strip() == f"interface.py {__version__}"
