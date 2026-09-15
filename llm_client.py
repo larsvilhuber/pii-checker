@@ -172,6 +172,33 @@ def check_model_works(model: str = DEFAULT_MODEL, timeout: int = 30) -> bool:
     return True
 
 
+def unload_ollama_model(model: str = DEFAULT_MODEL, timeout: int = 30) -> bool:
+    """Asks Ollama to evict the model from memory now (keep_alive=0). Every real
+    call uses keep_alive=-1, so without this the model stays resident for
+    everyone else using the endpoint. Logs and returns False on failure — never
+    raises, since a failed unload must not fail an otherwise successful run."""
+    import requests
+
+    if not OLLAMA_ENDPOINTS:
+        return False
+
+    endpoint = OLLAMA_ENDPOINTS[0]
+    try:
+        response = requests.post(
+            f"{endpoint}/api/generate",
+            headers={"X-API-Key": OLLAMA_API_KEY},
+            json={"model": model, "keep_alive": 0},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.warning("Could not unload model '%s' at %s: %s", model, endpoint, e)
+        return False
+
+    logger.info("Model '%s' unloaded from %s", model, endpoint)
+    return True
+
+
 def check_anthropic_ready() -> bool:
     """Checks the anthropic package is installed and ANTHROPIC_API_KEY is set."""
     try:

@@ -62,3 +62,36 @@ def test_sha256_file_matches_hashlib(tmp_path):
     f.write_bytes(b"hello world" * 5000)  # spans several read chunks
     assert sha256_file(str(f)) == hashlib.sha256(f.read_bytes()).hexdigest()
     assert len(sha256_file(str(f))) == 64
+
+
+def test_unload_ollama_model_posts_keep_alive_zero(monkeypatch):
+    import requests
+    import llm_client
+    from llm_client import unload_ollama_model
+
+    calls = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(llm_client, "OLLAMA_ENDPOINTS", ["http://ollama.test:11434"])
+    monkeypatch.setattr(requests, "post", lambda url, **kw: calls.append((url, kw)) or _Resp())
+
+    assert unload_ollama_model("gemma4:e4b") is True
+    (url, kw), = calls
+    assert url == "http://ollama.test:11434/api/generate"
+    assert kw["json"] == {"model": "gemma4:e4b", "keep_alive": 0}
+
+
+def test_unload_ollama_model_returns_false_on_error(monkeypatch):
+    import requests
+    import llm_client
+    from llm_client import unload_ollama_model
+
+    def _boom(url, **kw):
+        raise requests.exceptions.ConnectionError("down")
+
+    monkeypatch.setattr(llm_client, "OLLAMA_ENDPOINTS", ["http://ollama.test:11434"])
+    monkeypatch.setattr(requests, "post", _boom)
+    assert unload_ollama_model("gemma4:e4b") is False

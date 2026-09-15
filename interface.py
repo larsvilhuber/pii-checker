@@ -14,6 +14,8 @@
 #               folder of packages)
 # --model       shows a chooser of models pulled on the Ollama endpoint
 # --model NAME  uses NAME without prompting
+# --continue    leave the model loaded in Ollama afterwards (for a follow-up
+#               run); by default it is unloaded when the script ends
 # Without --model the LLM_MODEL from config.env is used.
 
 import argparse
@@ -23,7 +25,7 @@ import sys
 from main import _check_dependencies, run_package, run_folder, logger, _rmtree_retrying
 from llm_client import (
     DEFAULT_PROVIDER, DEFAULT_MODEL, OLLAMA_ENDPOINTS,
-    check_ollama_reachable, list_ollama_models, save_model_to_config,
+    check_ollama_reachable, list_ollama_models, save_model_to_config, unload_ollama_model,
 )
 
 
@@ -111,6 +113,8 @@ def main():
     parser.add_argument("--model", nargs="?", const=_CHOOSE, default=None, metavar="NAME",
                         help="Ollama model to use; with no NAME, pick from the models on the endpoint. "
                              "Default: LLM_MODEL from config.env")
+    parser.add_argument("--continue", dest="keep_loaded", action="store_true",
+                        help="keep the model loaded in Ollama after this run (default: unload it at the end)")
     args = parser.parse_args()
     if args.folder is None and isinstance(args.model, str) and os.path.isdir(os.path.expanduser(args.model)):
         # "interface.py --model /path" — argparse took the folder as the model name
@@ -131,6 +135,16 @@ def main():
     else:
         mode = '2' if args.many else '1'
 
+    try:
+        _run(mode, folder, model)
+    finally:
+        # runs after a crash or Ctrl-C too — that is exactly when a model would
+        # otherwise be left resident for every other user of the endpoint
+        if DEFAULT_PROVIDER == 'ollama' and not args.keep_loaded:
+            unload_ollama_model(model)
+
+
+def _run(mode, folder, model):
     if mode == '1':
         packages = [folder]
         for i, package_folder in enumerate(packages, start=1):
