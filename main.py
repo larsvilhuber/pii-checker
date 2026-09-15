@@ -61,7 +61,8 @@ from unzip_package import unzip_folder, _get_handler
 from find_duplicities import find_duplicities, sha256_file
 from version import __version__
 from clean_package import clean_folder
-from llm_client import DEFAULT_PROVIDER, DEFAULT_MODEL
+from llm_client import DEFAULT_PROVIDER, DEFAULT_MODEL, OLLAMA_ENDPOINTS, reset_usage, get_usage, get_ollama_model_memory
+import platform
 
 
 # --- Issue collector — captures all warnings and errors from all modules ---
@@ -177,7 +178,34 @@ def _get_archive_info(folder_path) -> dict:
     }
 
 
-def save_results(results, issues, output_path):
+def _code_info() -> dict:
+    """Returns the git remote URL (normalised to https) and current commit of
+    this checkout, so a results file records which code produced it. Fields are
+    empty when the code is not a git checkout or git is unavailable."""
+    import subprocess
+    code_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _git(*args):
+        try:
+            return subprocess.run(['git', *args], cwd=code_dir, capture_output=True,
+                                  text=True, timeout=5, check=True).stdout.strip()
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return ''
+
+    url = _git('config', '--get', 'remote.origin.url')
+    if url.startswith('git@'):                      # git@host:owner/repo.git -> https://host/owner/repo
+        url = 'https://' + url[4:].replace(':', '/', 1)
+    if url.endswith('.git'):
+        url = url[:-4]
+
+    commit = _git('rev-parse', '--short', 'HEAD')
+    if commit and _git('status', '--porcelain'):
+        commit += '+dirty'
+
+    return {'code_url': url, 'code_commit': commit}
+
+
+def save_results(results, issues, output_path, metadata=None):
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         if results:
             pd.DataFrame(results).to_excel(writer, sheet_name='Results', index=False)
@@ -186,6 +214,9 @@ def save_results(results, issues, output_path):
                 writer, sheet_name='Results', index=False)
         if issues:
             pd.DataFrame(issues).to_excel(writer, sheet_name='Issues', index=False)
+        if metadata:
+            pd.DataFrame({'key': list(metadata), 'value': list(metadata.values())}).to_excel(
+                writer, sheet_name='Metadata', index=False)
     logger.info("Results saved to %s", output_path)
 
 
@@ -209,6 +240,40 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
     if tracker is None and track_throughput:
         throughput_path = os.path.join(os.path.dirname(output_path) or '.', 'throughput_log.xlsx')
         tracker = ThroughputTracker(throughput_path)
+
+    # --- Step 0: run metadata (written to the Metadata sheet of pii_check.xlsx) ---
+    reset_usage()
+    started_at = datetime.datetime.now()
+    metadata = {
+        'package_path'   : os.path.abspath(folder_path),
+        'version'        : __version__,
+        **_code_info(),
+        'python_version' : platform.python_version(),
+        'provider'       : provider,
+        'model'          : model,
+        'ollama_endpoint': OLLAMA_ENDPOINTS[0] if provider == 'ollama' and OLLAMA_ENDPOINTS else '',
+        'started'        : started_at.strftime('%Y-%m-%d %H:%M:%S'),
+        'ended'          : '',
+        'duration_s'     : '',
+    }
+    n_columns_total = 0
+    n_columns_candidate = 0
+
+    def _finalize_metadata(files, n_data_files, n_duplicates, results):
+        ended_at = datetime.datetime.now()
+        metadata['ended'] = ended_at.strftime('%Y-%m-%d %H:%M:%S')
+        metadata['duration_s'] = round((ended_at - started_at).total_seconds(), 1)
+        metadata.update({
+            'n_files_total'      : len(files),
+            'n_data_files'       : n_data_files,
+            'n_duplicates'       : n_duplicates,
+            'n_columns_total'    : n_columns_total,
+            'n_columns_candidate': n_columns_candidate,
+            'n_columns_checked'  : sum(1 for r in results if r.get('duplicate_of') == ''),
+            **get_usage(),
+        })
+        if provider == 'ollama':
+            metadata.update(get_ollama_model_memory(model))
 
     # --- Step 1: set up temp working dir ---
     temp_dir = tempfile.mkdtemp(dir=temp_base)
@@ -290,6 +355,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             for fp, sheet_name, df, labels, nrows in loaded:
 
                 candidates = []
+                n_columns_total += len(df.columns)
                 for col in df.columns:
                     try:
                         label = labels.get(col, col) if labels else col
@@ -309,6 +375,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
                         results.append(err_row)
 
                 n_candidates = len(candidates)
+                n_columns_candidate += n_candidates
                 if n_candidates == 0:
                     continue
 
@@ -354,7 +421,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             primary_results[file_path] = file_results
 
             if results:
-                save_results(results, issue_collector.issues, output_path)
+                save_results(results, issue_collector.issues, output_path, metadata=metadata)
 
         # --- Step 8: second pass — copy results for duplicates ---
         for file_path in files:
@@ -374,9 +441,10 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
                     results.append(dup_row)
 
         # --- Step 9: final save ---
-        save_results(results, issue_collector.issues, output_path)
+        _finalize_metadata(files, n_data_files, n_duplicates, results)
+        save_results(results, issue_collector.issues, output_path, metadata=metadata)
         if central_output_path:
-            save_results(results, issue_collector.issues, central_output_path)
+            save_results(results, issue_collector.issues, central_output_path, metadata=metadata)
 
         # --- build summary ---
         results_df = pd.DataFrame(results) if results else pd.DataFrame()

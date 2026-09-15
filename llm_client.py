@@ -229,6 +229,58 @@ def check_openai_ready() -> bool:
     return True
 
 
+# --- Usage accounting: tokens and model time across all calls since reset_usage() ---
+_usage = {'llm_calls': 0, 'llm_prompt_tokens': 0, 'llm_completion_tokens': 0, 'llm_time_s': 0.0}
+
+
+def reset_usage() -> None:
+    """Zeroes the running token/time counters (call at the start of each package)."""
+    for k in _usage:
+        _usage[k] = 0.0 if k == 'llm_time_s' else 0
+
+
+def get_usage() -> dict:
+    """Returns a copy of the running counters: llm_calls, llm_prompt_tokens,
+    llm_completion_tokens, llm_time_s (seconds spent inside the model, where
+    the provider reports it)."""
+    return {**_usage, 'llm_time_s': round(_usage['llm_time_s'], 3)}
+
+
+def _record_usage(prompt_tokens=0, completion_tokens=0, seconds=0.0) -> None:
+    _usage['llm_calls'] += 1
+    _usage['llm_prompt_tokens'] += int(prompt_tokens or 0)
+    _usage['llm_completion_tokens'] += int(completion_tokens or 0)
+    _usage['llm_time_s'] += float(seconds or 0.0)
+
+
+def get_ollama_model_memory(model: str, timeout: int = 10) -> dict:
+    """Returns {'model_memory_mb', 'model_vram_mb'} for the model as currently
+    loaded on the Ollama endpoint (from /api/ps), or empty strings if the
+    endpoint can't be queried or the model isn't loaded."""
+    import requests
+
+    empty = {'model_memory_mb': '', 'model_vram_mb': ''}
+    if not OLLAMA_ENDPOINTS:
+        return empty
+
+    endpoint = OLLAMA_ENDPOINTS[0]
+    try:
+        response = requests.get(f"{endpoint}/api/ps", headers={"X-API-Key": OLLAMA_API_KEY}, timeout=timeout)
+        response.raise_for_status()
+        loaded = response.json().get("models", [])
+    except requests.exceptions.RequestException as e:
+        logger.warning("Could not query loaded models at %s: %s", endpoint, e)
+        return empty
+
+    for m in loaded:
+        if (m.get("name") or m.get("model")) == model:
+            return {
+                'model_memory_mb': round(m.get("size", 0) / 1024 / 1024),
+                'model_vram_mb'  : round(m.get("size_vram", 0) / 1024 / 1024),
+            }
+    return empty
+
+
 def call_llm(
     prompt: str,
     provider: str = DEFAULT_PROVIDER,
@@ -268,6 +320,8 @@ def _call_anthropic(prompt: str, model: str) -> str:
         messages=[{"role": "user", "content": prompt}]
     )
 
+    usage = getattr(response, 'usage', None)
+    _record_usage(getattr(usage, 'input_tokens', 0), getattr(usage, 'output_tokens', 0))
     return response.content[0].text
 
 
@@ -281,6 +335,8 @@ def _call_openai(prompt: str, model: str) -> str:
         messages=[{"role": "user", "content": prompt}]
     )
 
+    usage = getattr(response, 'usage', None)
+    _record_usage(getattr(usage, 'prompt_tokens', 0), getattr(usage, 'completion_tokens', 0))
     return response.choices[0].message.content
 
 
@@ -338,6 +394,12 @@ def _call_ollama(prompt: str, model: str) -> str:
             if OLLAMA_DEBUG:
                 logger.info("[OLLAMA DEBUG] chunk: %r", chunk)
         if data.get("done"):
+            # final chunk carries the token counts and model timings (ns)
+            _record_usage(
+                data.get("prompt_eval_count", 0),
+                data.get("eval_count", 0),
+                (data.get("prompt_eval_duration", 0) + data.get("eval_duration", 0)) / 1e9,
+            )
             if OLLAMA_DEBUG:
                 logger.info("[OLLAMA DEBUG] done. full response: %s", "".join(content_parts))
             break

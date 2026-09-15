@@ -135,5 +135,5 @@ The overview file tracks a `status` per package (`pending`, `running`, `done`, `
 
 To re-run a package that's already finished (`done`, or any error state), manually edit its `status` cell back to `pending` and run the batch again — it'll be picked up on the next pass. To permanently exclude a package instead, set its status to `skip` and, optionally, record why in the `notes` column.
 
-Each `pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label.
+Each `pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label. A `Metadata` sheet records how the file was produced: software version, code URL and commit, Python version, provider/model/endpoint, start/end time, file and column counts, LLM calls and token totals, and (for Ollama) the model's memory footprint on the server.
 

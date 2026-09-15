@@ -107,3 +107,33 @@ def test_version_flag_prints_version(capsys):
         interface.main()
     assert e.value.code == 0
     assert capsys.readouterr().out.strip() == f"interface.py {__version__}"
+
+
+def test_code_info_reports_https_url_and_commit():
+    from main import _code_info
+    info = _code_info()
+    assert info['code_url'].startswith('https://github.com/') and info['code_url'].endswith('/pii-checker')
+    assert len(info['code_commit']) >= 7
+
+
+def test_save_results_writes_metadata_sheet(tmp_path):
+    import pandas as pd
+    from main import save_results
+    out = tmp_path / "pii_check.xlsx"
+    save_results([{'file': 'a.csv', 'evaluation': 'not_pii'}], [], str(out),
+                 metadata={'version': '9.9.9', 'started': '2026-01-01 00:00:00'})
+    sheets = pd.read_excel(out, sheet_name=None)
+    assert list(sheets) == ['Results', 'Metadata']
+    meta = dict(zip(sheets['Metadata']['key'], sheets['Metadata']['value']))
+    assert meta['version'] == '9.9.9'
+
+
+def test_llm_usage_accumulates_and_resets():
+    import llm_client
+    llm_client.reset_usage()
+    llm_client._record_usage(prompt_tokens=10, completion_tokens=5, seconds=1.5)
+    llm_client._record_usage(prompt_tokens=20, completion_tokens=1, seconds=0.5)
+    u = llm_client.get_usage()
+    assert u == {'llm_calls': 2, 'llm_prompt_tokens': 30, 'llm_completion_tokens': 6, 'llm_time_s': 2.0}
+    llm_client.reset_usage()
+    assert llm_client.get_usage()['llm_calls'] == 0
