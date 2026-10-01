@@ -119,7 +119,7 @@ def test_code_info_reports_https_url_and_commit():
 def test_save_results_writes_metadata_sheet(tmp_path):
     import pandas as pd
     from main import save_results
-    out = tmp_path / "pii_check.xlsx"
+    out = tmp_path / "ai_pii_check.xlsx"
     save_results([{'file': 'a.csv', 'evaluation': 'not_pii'}], [], str(out),
                  metadata={'version': '9.9.9', 'started': '2026-01-01 00:00:00'})
     sheets = pd.read_excel(out, sheet_name=None)

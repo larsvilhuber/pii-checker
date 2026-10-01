@@ -127,13 +127,13 @@ By default it uses the model from `config.env`. With `--model` (and `LLM_PROVIDE
 
 After the startup check, you're asked to choose a mode:
 
-**1. Single package** — point it at one folder containing a replication package (data files, possibly zipped). It unzips archives, cleans junk files, finds duplicate files, and evaluates every candidate column. Results are saved to `pii_check.xlsx` inside that folder.
+**1. Single package** — point it at one folder containing a replication package (data files, possibly zipped). It unzips archives, cleans junk files, finds duplicate files, and evaluates every candidate column. Results are saved to `ai_pii_check.xlsx` inside that folder.
 
-**2. Many packages in a folder** — point it at a folder containing multiple package subfolders (e.g. one subfolder per dataset/study). Each subfolder is processed the same way as single-package mode, with its own `pii_check.xlsx`, and results are also rolled up into `pii_results_overview.xlsx` in the parent folder.
+**2. Many packages in a folder** — point it at a folder containing multiple package subfolders (e.g. one subfolder per dataset/study). Each subfolder is processed the same way as single-package mode, with its own `ai_pii_check.xlsx`, and results are also rolled up into `ai_pii_results_overview.xlsx` in the parent folder.
 
 The overview file tracks a `status` per package (`pending`, `running`, `done`, `skip`, or an error state) plus summary counts (files found, duplicates, columns checked, and how many were flagged `direct_pii`/`possible_indirect`/`internal_id`). This makes the batch run **resumable** — if it's interrupted, just run it again and it picks up where it left off (any package left `running` is retried automatically).
 
 To re-run a package that's already finished (`done`, or any error state), manually edit its `status` cell back to `pending` and run the batch again — it'll be picked up on the next pass. To permanently exclude a package instead, set its status to `skip` and, optionally, record why in the `notes` column.
 
-Each `pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label. A `Metadata` sheet records how the file was produced: software version, code URL and commit, Python version, provider/model/endpoint, start/end time, file and column counts, LLM calls and token totals, and (for Ollama) the model's memory footprint on the server.
+Each `ai_pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label. A `Metadata` sheet records how the file was produced: software version, code URL and commit, Python version, provider/model/endpoint, start/end time, file and column counts, LLM calls and token totals, and (for Ollama) the model's memory footprint on the server.
 

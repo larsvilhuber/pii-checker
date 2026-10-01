@@ -15,7 +15,7 @@ commit message:
 - **MAJOR** — breaking change: removing/renaming a CLI flag, a `config.env`
   key, or an output column; changing the meaning of an existing evaluation
   category; anything that makes an existing invocation or downstream reader of
-  `pii_check.xlsx` / `pii_results_overview.xlsx` stop working.
+  `ai_pii_check.xlsx` / `ai_pii_results_overview.xlsx` stop working.
 
 While the version is `0.x.y`, treat MINOR as the "feature" counter and PATCH
 as the "fix" counter; a MAJOR bump to `1.0.0` is a deliberate decision by the

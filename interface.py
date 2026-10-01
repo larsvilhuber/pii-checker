@@ -5,8 +5,8 @@
 # packages inside a folder. A single package is run directly via
 # run_package(); many packages are delegated to run_folder(), which
 # auto-discovers package subfolders and maintains a resumable overview/
-# status file (pii_results_overview.xlsx) in that folder.
-# Each package gets its own pii_check.xlsx saved inside its own folder.
+# status file (ai_pii_results_overview.xlsx) in that folder.
+# Each package gets its own ai_pii_check.xlsx saved inside its own folder.
 #
 # Command line:
 #   python interface.py [folder] [--model [NAME]]
@@ -152,7 +152,7 @@ def _run(mode, folder, model):
         packages = [folder]
         for i, package_folder in enumerate(packages, start=1):
             name = os.path.basename(os.path.normpath(package_folder))
-            output_path = os.path.join(package_folder, "pii_check.xlsx")
+            output_path = os.path.join(package_folder, "ai_pii_check.xlsx")
             temp_base = os.path.join(package_folder, "temp_pii_scan")
             os.makedirs(temp_base, exist_ok=True)
 

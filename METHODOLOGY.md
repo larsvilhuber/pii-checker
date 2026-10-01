@@ -44,7 +44,7 @@ Independently of the LLM, deterministic pattern checks (Prolific/MTurk ID format
 
 **5. Output**
 
-Every checked column gets a row in `pii_check.xlsx` with its evaluation, the model's one-sentence reasoning, and the exact tabulation it was shown — so a flagged (or cleared) column can be audited. Columns skipped are not reported in the output file.
+Every checked column gets a row in `ai_pii_check.xlsx` with its evaluation, the model's one-sentence reasoning, and the exact tabulation it was shown — so a flagged (or cleared) column can be audited. Columns skipped are not reported in the output file.
 
 Tip: use filtering in Excel to quickly see the columns labelled as PII.
 

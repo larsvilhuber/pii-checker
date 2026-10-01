@@ -6,7 +6,7 @@
 #   1. Single package: run_package(folder_path, output_path)
 #   2. Batch:          run_folder(folder_path) — auto-discovers package
 #                      subfolders and maintains a resumable overview/status
-#                      file (pii_results_overview.xlsx) in that folder
+#                      file (ai_pii_results_overview.xlsx) in that folder
 #
 # Pipeline per package (run_package):
 #   0. Record archive info (SHA-256, size) before unzipping
@@ -241,7 +241,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
         throughput_path = os.path.join(os.path.dirname(output_path) or '.', 'throughput_log.xlsx')
         tracker = ThroughputTracker(throughput_path)
 
-    # --- Step 0: run metadata (written to the Metadata sheet of pii_check.xlsx) ---
+    # --- Step 0: run metadata (written to the Metadata sheet of ai_pii_check.xlsx) ---
     reset_usage()
     started_at = datetime.datetime.now()
     metadata = {
@@ -564,7 +564,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     Discovers all package subfolders in folder_path, processes any row
     currently 'pending' (including one just reset from 'running'), and
     maintains a resumable overview/status file at
-    folder_path/pii_results_overview.xlsx. 'done', 'skip', and the terminal
+    folder_path/ai_pii_results_overview.xlsx. 'done', 'skip', and the terminal
     error states below are left untouched unless a human resets them back
     to 'pending' manually.
 
@@ -592,7 +592,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     'notes' is a free-text column, never written by this function — purely
     for a human to record why a package was marked 'skip'.
     """
-    overview_path = os.path.join(folder_path, "pii_results_overview.xlsx")
+    overview_path = os.path.join(folder_path, "ai_pii_results_overview.xlsx")
     discovered = _list_packages(folder_path)
 
     def _blank_row(package_path):
@@ -644,7 +644,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     for i, idx in enumerate(pending_indices, start=1):
         package_path = overview.at[idx, 'package_path']
         name = os.path.basename(os.path.normpath(package_path))
-        output_path = os.path.join(package_path, "pii_check.xlsx")
+        output_path = os.path.join(package_path, "ai_pii_check.xlsx")
         temp_base = os.path.join(package_path, "temp_pii_scan")
         os.makedirs(temp_base, exist_ok=True)
 
