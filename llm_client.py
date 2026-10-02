@@ -67,9 +67,10 @@ OLLAMA_API_KEY = os.environ.get('OLLAMA_API_KEY', '')
 OLLAMA_DEBUG = os.environ.get('OLLAMA_DEBUG', 'false').strip().lower() == 'true'
 
 # OLLAMA_THINK controls Ollama's "think" request field: 'true'/'false' send that
-# value explicitly; empty or unset (OLLAMA_THINK = None) omits the field entirely,
-# so the model does whatever it does by default.
-_THINK_RAW = os.environ.get('OLLAMA_THINK', '').strip().lower()
+# value explicitly (unset defaults to 'false', matching config.env.example); empty
+# (OLLAMA_THINK = None) omits the field entirely, so the model does whatever it
+# does by default.
+_THINK_RAW = os.environ.get('OLLAMA_THINK', 'false').strip().lower()
 if _THINK_RAW in ('true', '1', 'yes'):
     OLLAMA_THINK = True
 elif _THINK_RAW in ('false', '0', 'no'):

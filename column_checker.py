@@ -195,10 +195,113 @@ def _build_prompt(series: pd.Series, col_name: str, label: str, nrows: int, file
     }}"""
 
 
+def _build_gps_prompt(col_name: str, label: str, file_name: str = '') -> str:
+    """Builds the LLM prompt for a GPS candidate — judged on name/label only, values are not shown."""
+    return f"""You are a PII detection assistant helping audit research datasets for personally identifiable information (PII).
+
+    An automated check found that the values of the following column pair with a neighbouring column as plausible latitude/longitude coordinates (most of the points fall on land). The values are therefore not shown — judge only from the column name and label.
+
+    File name    : {file_name}
+    Column name  : {col_name}
+    Column label : {label}
+
+    Based on the column name and/or label, does this column look like it holds a latitude or longitude coordinate?
+    - "yes"     : the name or label indicates latitude, longitude, GPS or geographic coordinates, in any language or abbreviation (e.g. lat, lon, lng, LocationLatitude, gps_y, coord_x)
+    - "no"      : the name or label clearly indicates something else (e.g. a score, percentage, measurement, price)
+    - "unclear" : the name and label are too generic to tell (e.g. v12, Q3_1, var_a)
+
+    Respond with ONLY a JSON object. No explanation, no reasoning, no markdown outside the JSON, no text before or after. Your entire response must be exactly this:
+    {{
+        "reasoning": "one sentence explanation",
+        "looks_like_coordinate": "yes" | "no" | "unclear"
+    }}"""
+
+
+def _call_llm_json(prompt: str, col_name: str, required_key: str,
+                   provider: str, model: str) -> dict | None:
+    """Calls the LLM with retries. Returns the parsed JSON, or None if every attempt failed."""
+    retry_delays = [1, 5, 10, 30]
+
+    for attempt in range(1, 5):
+        try:
+            response = call_llm(prompt, provider=provider, model=model)
+            parsed = parse_json_response(response)
+            if parsed and required_key in parsed:
+                return parsed
+
+            logger.warning("Attempt %d: invalid response for column '%s'", attempt, col_name)
+
+        except Exception as e:
+            logger.warning("Attempt %d: LLM call failed for column '%s': %s", attempt, col_name, e)
+
+        if attempt < 4:
+            delay = retry_delays[attempt - 1]
+            logger.info("Waiting %ds before retry...", delay)
+            time.sleep(delay)
+
+    logger.error("All attempts failed for column '%s'", col_name)
+    return None
+
+
+def _check_gps_column(series: pd.Series, col_name: str, label: str, nrows: int,
+                      file_name: str, provider: str, model: str, test_mode: bool) -> dict:
+    """
+    GPS candidates (see column_filter.find_gps_candidates) — the pair/land test is the evidence
+    from the values, the LLM only judges whether the name/label looks like a coordinate:
+      - "yes" / "unclear" -> direct_pii (unclear = generic name, kept as PII to be safe)
+      - "no"              -> not_pii (name/label clearly says it is something else, e.g. a score
+                             column next to a real coordinate that happens to pair on land)
+    Any other answer is treated as "unclear"; if the LLM fails entirely, the result is direct_pii.
+    """
+    tabulation = _build_tabulation(series, nrows)
+    prompt = _build_gps_prompt(col_name, label, file_name)
+    note = "Values pair with a neighbouring column as lat/lon on land."
+
+    if test_mode:
+        print(f"\n{'=' * 60}")
+        print(f"TEST MODE — column: {col_name} / label: {label} [GPS CHECK]")
+        print(f"{'=' * 60}")
+        print(prompt)
+        print(f"{'=' * 60}\n")
+        return {
+            'evaluation': 'test - not checked',
+            'reasoning': 'test mode — no API call made',
+            'tabulation': tabulation,
+        }
+
+    parsed = _call_llm_json(prompt, col_name, 'looks_like_coordinate', provider, model)
+    if not parsed:
+        evaluation = 'direct_pii'
+        reasoning = (f"Possible GPS coordinate: {note} Name/label check unavailable "
+                     f"(LLM returned unparseable response after 4 attempts), kept as PII to be safe.")
+    else:
+        # only the first word counts, so "No.", "Yes!" or "no, it's a score" still parse
+        first_word = re.match(r'[a-z]*', str(parsed['looks_like_coordinate']).strip().lower())
+        answer = first_word.group(0)
+        llm_reasoning = parsed.get('reasoning', '')
+        if answer == 'yes':
+            evaluation = 'direct_pii'
+            reasoning = f"GPS coordinate: {note} Name/label indicates a coordinate. LLM: {llm_reasoning}"
+        elif answer == 'no':
+            evaluation = 'not_pii'
+            reasoning = (f"Not treated as GPS: {note} But name/label indicates something else. "
+                         f"LLM: {llm_reasoning}")
+        else:
+            evaluation = 'direct_pii'
+            reasoning = (f"Possible GPS coordinate: {note} Name/label too generic to confirm, "
+                         f"LLM: {llm_reasoning}")
+
+    return {
+        'evaluation': evaluation,
+        'reasoning': sanitize_for_excel(reasoning),
+        'tabulation': tabulation,
+    }
+
+
 def check_column(series: pd.Series, col_name: str, label: str, nrows: int,
                  file_name: str = '',
                  provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL,
-                 test_mode: bool = False) -> dict:
+                 test_mode: bool = False, gps_candidate: bool = False) -> dict:
     """
     Checks a single column for PII using LLM.
     Returns a dict with evaluation results including the tabulation shown to the LLM.
@@ -210,9 +313,16 @@ def check_column(series: pd.Series, col_name: str, label: str, nrows: int,
     in the reasoning text, not discarded. The LLM always gets exactly one
     unmodified standard prompt, with no pattern info injected.
 
+    If gps_candidate=True (column listed by column_filter.find_gps_candidates),
+    the column is handled by _check_gps_column instead, with a separate
+    name/label-only prompt (yes/unclear -> direct_pii, no -> not_pii).
+
     If test_mode=True, prints the prompt and pattern-check result, and
     returns a fake result without calling the API.
     """
+    if gps_candidate:
+        return _check_gps_column(series, col_name, label, nrows, file_name, provider, model, test_mode)
+
     tabulation = _build_tabulation(series, nrows)
     pattern_result = evaluate_patterns(series, col_name, label)
 
@@ -231,46 +341,30 @@ def check_column(series: pd.Series, col_name: str, label: str, nrows: int,
             'tabulation': tabulation,
         }
 
-    retry_delays = [1, 5, 10, 30]
-
     prompt = _build_prompt(series, col_name, label, nrows, file_name)
-    for attempt in range(1, 5):
-        try:
-            response = call_llm(prompt, provider=provider, model=model)
-            parsed = parse_json_response(response)
+    parsed = _call_llm_json(prompt, col_name, 'evaluation', provider, model)
 
-            if parsed and 'evaluation' in parsed:
-                llm_evaluation = parsed['evaluation']
-                llm_reasoning = parsed.get('reasoning', '')
+    if parsed:
+        llm_evaluation = parsed['evaluation']
+        llm_reasoning = parsed.get('reasoning', '')
 
-                if pattern_result['floor_met']:
-                    evaluation = 'direct_pii'
-                    if llm_evaluation == 'direct_pii':
-                        reasoning = f"{pattern_result['note']} LLM evaluation: {llm_reasoning}"
-                    else:
-                        reasoning = (f"{pattern_result['note']} LLM evaluation: {llm_reasoning} "
-                                     f"(LLM independently classified as {llm_evaluation})")
-                else:
-                    evaluation = llm_evaluation
-                    reasoning = llm_reasoning
+        if pattern_result['floor_met']:
+            evaluation = 'direct_pii'
+            if llm_evaluation == 'direct_pii':
+                reasoning = f"{pattern_result['note']} LLM evaluation: {llm_reasoning}"
+            else:
+                reasoning = (f"{pattern_result['note']} LLM evaluation: {llm_reasoning} "
+                             f"(LLM independently classified as {llm_evaluation})")
+        else:
+            evaluation = llm_evaluation
+            reasoning = llm_reasoning
 
-                return {
-                    'evaluation': evaluation,
-                    'reasoning': sanitize_for_excel(reasoning),
-                    'tabulation': tabulation,
-                }
+        return {
+            'evaluation': evaluation,
+            'reasoning': sanitize_for_excel(reasoning),
+            'tabulation': tabulation,
+        }
 
-            logger.warning("Attempt %d: invalid response for column '%s'", attempt, col_name)
-
-        except Exception as e:
-            logger.warning("Attempt %d: LLM call failed for column '%s': %s", attempt, col_name, e)
-
-        if attempt < 4:
-            delay = retry_delays[attempt - 1]
-            logger.info("Waiting %ds before retry...", delay)
-            time.sleep(delay)
-
-    logger.error("All attempts failed for column '%s'", col_name)
     if pattern_result['floor_met']:
         return {
             'evaluation': 'direct_pii',

@@ -1,6 +1,7 @@
-# test_model_select.py
-# Tests for the interactive model-selection helpers (config.env rewrite and menu parsing).
-# Run with: python -m pytest test_model_select.py
+# test_pii_checker.py
+# Unit tests for the whole tool: model selection, folder argument, hashing, output sheets,
+# pattern checks and GPS detection. No Ollama, network or real data needed.
+# Run with: python -m pytest -q
 
 import builtins
 
@@ -119,13 +120,56 @@ def test_code_info_reports_https_url_and_commit():
 def test_save_results_writes_metadata_sheet(tmp_path):
     import pandas as pd
     from main import save_results
-    out = tmp_path / "ai_pii_check.xlsx"
+    out = tmp_path / "pii_checker_results.xlsx"
     save_results([{'file': 'a.csv', 'evaluation': 'not_pii'}], [], str(out),
-                 metadata={'version': '9.9.9', 'started': '2026-01-01 00:00:00'})
+                 metadata={'version': '9.9.9', 'started': '2026-01-01 00:00:00',
+                           'package_name': 'pkg1', 'n_direct_pii': 2})
     sheets = pd.read_excel(out, sheet_name=None)
-    assert list(sheets) == ['Results', 'Metadata']
+    assert list(sheets) == ['Overview', 'Results', 'Metadata']
     meta = dict(zip(sheets['Metadata']['key'], sheets['Metadata']['value']))
     assert meta['version'] == '9.9.9'
+    overview = dict(zip(sheets['Overview']['Metric'], sheets['Overview']['Value']))
+    assert overview['Package'] == 'pkg1'
+    assert overview['Flagged: direct PII'] == 2
+    assert 'Tool version' not in overview  # version lives in Metadata only
+    assert overview['Run finished'] == 'not finished (partial results)'  # no 'ended' yet
+
+
+def test_pattern_checks_accept_integer_column_names():
+    import pandas as pd
+    from pii_patterns import evaluate_patterns, is_platform_id_candidate
+    # 2-D MATLAB arrays / headerless files give integer column names; used to raise
+    # AttributeError: 'int' object has no attribute 'lower'
+    assert evaluate_patterns(pd.Series(['abc', 'def']), 1, 1)['floor_met'] is False
+    assert is_platform_id_candidate(0, None) is False
+    assert is_platform_id_candidate('WorkerId') is True
+
+
+def test_gps_answer_parsing_ignores_punctuation_and_extra_words(monkeypatch):
+    import pandas as pd
+    import column_checker
+    cases = {'yes': 'direct_pii', 'Yes!': 'direct_pii', 'No.': 'not_pii',
+             "no, it's a score": 'not_pii', 'unclear': 'direct_pii', 'maybe': 'direct_pii'}
+    for answer, expected in cases.items():
+        monkeypatch.setattr(column_checker, '_call_llm_json',
+                            lambda *a, answer=answer, **k: {'reasoning': 'r', 'looks_like_coordinate': answer})
+        result = column_checker.check_column(pd.Series([45.4215, 40.7128]), 'c', 'c', 2, gps_candidate=True)
+        assert result['evaluation'] == expected, answer
+
+
+def test_count_results_skips_duplicates_and_counts_flags():
+    from main import _count_results
+    results = [
+        {'evaluation': 'direct_pii', 'duplicate_of': ''},
+        {'evaluation': 'direct_pii', 'duplicate_of': 'a.csv'},  # copied from a duplicate
+        {'evaluation': 'internal_id', 'duplicate_of': ''},
+        {'evaluation': 'not_pii', 'duplicate_of': ''},
+    ]
+    issues = [{'level': 'WARNING'}, {'level': 'ERROR'}, {'level': 'WARNING'}]
+    c = _count_results(results, issues)
+    assert c['n_columns_checked'] == 3
+    assert c['n_direct_pii'] == 2 and c['n_internal_id'] == 1 and c['n_indirect'] == 0
+    assert c['n_warnings'] == 2 and c['n_errors'] == 1
 
 
 def test_llm_usage_accumulates_and_resets():

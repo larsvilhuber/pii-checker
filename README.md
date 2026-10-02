@@ -19,15 +19,15 @@ The tool is designed to detect **direct identifiers** (names, emails, phone numb
 It only searches for PII in tabular data. Documents such as `.pdf` or `.doc`, or multimedia files, are not evaluated. Supported file formats:
 
 - Excel — `.xls`, `.xlsx`
-- Plain text tabular data — `.csv`, `.tsv`, `.txt`
+- Plain text tabular data — `.csv`, `.tsv`, `.tab`, `.txt`, `.dat`
 - Stata — `.dta`
-- R — `.rds`, `.rdata`
-- SPSS — `.sav`
+- R — `.rds`, `.rdata`, `.rda`
+- SPSS — `.sav`, `.zsav`, `.por`
 - SAS — `.sas7bdat`, `.xpt`
 - Matlab — `.mat`
 - OpenDocument — `.ods`
 
-Archives are unpacked automatically: `.zip`, `.7z`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, and `.gz`.
+Archives are unpacked automatically: `.zip`, `.7z`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, and `.gz` (`.rar` is not supported — extract it manually first).
 
 ## Contents
 
@@ -85,22 +85,7 @@ pip install -r requirements.txt
 
 **4. Configure environment variables**
 
-Adjust `config.env` in the project root to reflect your chosen model:
-
-```
-LLM_PROVIDER=ollama
-LLM_MODEL=gemma4:e4b
-
-# ollama settings
-OLLAMA_ENDPOINTS=http://localhost:11434
-OLLAMA_API_KEY=NA
-OLLAMA_DEBUG=false
-OLLAMA_THINK=false
-
-# only needed if LLM_PROVIDER is anthropic or openai
-ANTHROPIC_API_KEY=NA
-OPENAI_API_KEY=NA
-```
+Copy `config.env.example` to `config.env` in the project root and adjust it to reflect your chosen model. 
 
 - `LLM_PROVIDER` — `ollama`, `anthropic`, or `openai`
 - `LLM_MODEL` — the exact model tag, e.g. an Ollama model name you've pulled
@@ -127,13 +112,18 @@ By default it uses the model from `config.env`. With `--model` (and `LLM_PROVIDE
 
 After the startup check, you're asked to choose a mode:
 
-**1. Single package** — point it at one folder containing a replication package (data files, possibly zipped). It unzips archives, cleans junk files, finds duplicate files, and evaluates every candidate column. Results are saved to `ai_pii_check.xlsx` inside that folder.
+**1. Single package** — point it at one folder containing a replication package (data files, possibly zipped). It unzips archives, cleans junk files, finds duplicate files, and evaluates every candidate column. Results are saved to `pii_checker_results.xlsx` inside that folder.
 
-**2. Many packages in a folder** — point it at a folder containing multiple package subfolders (e.g. one subfolder per dataset/study). Each subfolder is processed the same way as single-package mode, with its own `ai_pii_check.xlsx`, and results are also rolled up into `ai_pii_results_overview.xlsx` in the parent folder.
+**2. Many packages in a folder** — point it at a folder containing multiple package subfolders (e.g. one subfolder per dataset/study). Each subfolder is processed the same way as single-package mode, with its own `pii_checker_results.xlsx`, and results are also rolled up into `pii_checker_overview.xlsx` in the parent folder.
 
 The overview file tracks a `status` per package (`pending`, `running`, `done`, `skip`, or an error state) plus summary counts (files found, duplicates, columns checked, and how many were flagged `direct_pii`/`possible_indirect`/`internal_id`). This makes the batch run **resumable** — if it's interrupted, just run it again and it picks up where it left off (any package left `running` is retried automatically).
 
 To re-run a package that's already finished (`done`, or any error state), manually edit its `status` cell back to `pending` and run the batch again — it'll be picked up on the next pass. To permanently exclude a package instead, set its status to `skip` and, optionally, record why in the `notes` column.
 
-Each `ai_pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label. A `Metadata` sheet records how the file was produced: software version, code URL and commit, Python version, provider/model/endpoint, start/end time, file and column counts, LLM calls and token totals, and (for Ollama) the model's memory footprint on the server.
+Each `pii_checker_results.xlsx` has up to four sheets:
+
+- **Overview** — the key numbers for a reviewer: what was scanned, how many columns were flagged, and whether anything went wrong.
+- **Results** — one row per checked column, with the evaluation, the model's one-sentence reasoning, and the values it was shown, so you can audit *why* it made each call.
+- **Issues** — warnings and errors from the run (only present if there were any).
+- **Metadata** — the complete record of how the file was produced (tool version, model, timing, archive hashes, token usage).
 

@@ -5,6 +5,7 @@
 # the exact known-working environment:
 #   pip install -r requirements-lock.txt
 chardet==7.6.0
+global-land-mask==1.0.0
 numpy==2.5.2
 odfpy==1.4.1
 openpyxl==3.1.5

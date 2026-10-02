@@ -6,7 +6,7 @@
 #   1. Single package: run_package(folder_path, output_path)
 #   2. Batch:          run_folder(folder_path) — auto-discovers package
 #                      subfolders and maintains a resumable overview/status
-#                      file (ai_pii_results_overview.xlsx) in that folder
+#                      file (pii_checker_overview.xlsx) in that folder
 #
 # Pipeline per package (run_package):
 #   0. Record archive info (SHA-256, size) before unzipping
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Core packages required for this project to run at all — kept in sync with requirements.txt.
 _REQUIRED_PACKAGES = [
     "pandas", "numpy", "chardet", "pyreadstat", "pyreadr",
-    "openpyxl", "xlrd", "odf", "rdata", "scipy", "requests", "py7zr",
+    "openpyxl", "xlrd", "odf", "rdata", "scipy", "requests", "py7zr", "global_land_mask",
 ]
 
 
@@ -55,7 +55,7 @@ import datetime
 import time
 import pandas as pd
 from loader import load_data
-from column_filter import is_candidate_column
+from column_filter import is_candidate_column, find_gps_candidates
 from column_checker import check_column, sanitize_for_excel
 from unzip_package import unzip_folder, _get_handler
 from find_duplicities import find_duplicities, sha256_file
@@ -205,8 +205,47 @@ def _code_info() -> dict:
     return {'code_url': url, 'code_commit': commit}
 
 
+def _count_results(results, issues) -> dict:
+    """Result counts shared by the Metadata/Overview sheets and the run_package() summary."""
+    return {
+        'n_columns_checked': sum(1 for r in results if r.get('duplicate_of') == ''),
+        'n_direct_pii'     : sum(1 for r in results if r.get('evaluation') == 'direct_pii'),
+        'n_indirect'       : sum(1 for r in results if r.get('evaluation') == 'possible_indirect'),
+        'n_internal_id'    : sum(1 for r in results if r.get('evaluation') == 'internal_id'),
+        'n_warnings'       : sum(1 for i in issues if i['level'] == 'WARNING'),
+        'n_errors'         : sum(1 for i in issues if i['level'] == 'ERROR'),
+    }
+
+
+# Overview sheet: a short, readable selection of the metadata for reviewers (first tab).
+# The Metadata sheet (last tab) holds everything, including these, under the raw keys.
+_OVERVIEW_FIELDS = [
+    ('package_name'      , 'Package'),
+    ('n_files_total'     , 'Files found'),
+    ('n_data_files'      , 'Data files loaded'),
+    ('n_columns_checked' , 'Columns checked'),
+    ('n_direct_pii'      , 'Flagged: direct PII'),
+    ('n_indirect'        , 'Flagged: possible indirect PII'),
+    ('n_internal_id'     , 'Flagged: internal ID'),
+    ('n_warnings'        , 'Warnings'),
+    ('n_errors'          , 'Errors'),
+    ('model'             , 'LLM model'),
+    ('ended'             , 'Run finished'),
+]
+
+
+def _build_overview(metadata) -> pd.DataFrame:
+    rows = [{'Metric': label, 'Value': metadata.get(key, '')} for key, label in _OVERVIEW_FIELDS]
+    for row in rows:
+        if row['Metric'] == 'Run finished' and not row['Value']:
+            row['Value'] = 'not finished (partial results)'
+    return pd.DataFrame(rows)
+
+
 def save_results(results, issues, output_path, metadata=None):
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        if metadata:
+            _build_overview(metadata).to_excel(writer, sheet_name='Overview', index=False)
         if results:
             pd.DataFrame(results).to_excel(writer, sheet_name='Results', index=False)
         else:
@@ -241,11 +280,14 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
         throughput_path = os.path.join(os.path.dirname(output_path) or '.', 'throughput_log.xlsx')
         tracker = ThroughputTracker(throughput_path)
 
-    # --- Step 0: run metadata (written to the Metadata sheet of ai_pii_check.xlsx) ---
+    # --- Step 0: run metadata (written to the Metadata sheet of pii_checker_results.xlsx, and a
+    # selection of it to the Overview sheet) ---
     reset_usage()
     started_at = datetime.datetime.now()
     metadata = {
+        'package_name'   : os.path.basename(os.path.abspath(folder_path)),
         'package_path'   : os.path.abspath(folder_path),
+        **archive_info,
         'version'        : __version__,
         **_code_info(),
         'python_version' : platform.python_version(),
@@ -259,19 +301,27 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
     n_columns_total = 0
     n_columns_candidate = 0
 
-    def _finalize_metadata(files, n_data_files, n_duplicates, results):
-        ended_at = datetime.datetime.now()
-        metadata['ended'] = ended_at.strftime('%Y-%m-%d %H:%M:%S')
-        metadata['duration_s'] = round((ended_at - started_at).total_seconds(), 1)
+    def _update_metadata(files, n_data_files, n_duplicates, results):
+        """Refreshes the counts — called before every save, so a partial-results save
+        mid-run shows the numbers so far."""
         metadata.update({
             'n_files_total'      : len(files),
             'n_data_files'       : n_data_files,
             'n_duplicates'       : n_duplicates,
+            # every file is a duplicate (results copied from its primary), a loaded data
+            # file, or neither — the last group is never checked for PII
+            'n_files_not_loaded' : len(files) - n_duplicates - n_data_files,
             'n_columns_total'    : n_columns_total,
             'n_columns_candidate': n_columns_candidate,
-            'n_columns_checked'  : sum(1 for r in results if r.get('duplicate_of') == ''),
-            **get_usage(),
+            **_count_results(results, issue_collector.issues),
         })
+
+    def _finalize_metadata(files, n_data_files, n_duplicates, results):
+        ended_at = datetime.datetime.now()
+        metadata['ended'] = ended_at.strftime('%Y-%m-%d %H:%M:%S')
+        metadata['duration_s'] = round((ended_at - started_at).total_seconds(), 1)
+        _update_metadata(files, n_data_files, n_duplicates, results)
+        metadata.update(get_usage())
         if provider == 'ollama':
             metadata.update(get_ollama_model_memory(model))
 
@@ -354,14 +404,23 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
 
             for fp, sheet_name, df, labels, nrows in loaded:
 
+                try:
+                    gps_candidates = find_gps_candidates(df)
+                except Exception as e:
+                    logger.error("GPS pair check failed in %s: %s", rel_path, e)
+                    gps_candidates = {}
+
                 candidates = []
                 n_columns_total += len(df.columns)
                 for col in df.columns:
                     try:
                         label = labels.get(col, col) if labels else col
+                        if col in gps_candidates:
+                            candidates.append((col, label, gps_candidates[col], True))
+                            continue
                         is_candidate, filter_reason = is_candidate_column(df[col], label=label)
                         if is_candidate:
-                            candidates.append((col, label, filter_reason))
+                            candidates.append((col, label, filter_reason, False))
                     except Exception as e:
                         logger.error("Skipping column '%s' in %s — filter error: %s", col, rel_path, e)
                         label = labels.get(col, col) if labels else col
@@ -381,7 +440,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
 
                 logger.info("Processing: %s — 0/%d candidate columns", rel_path, n_candidates)
 
-                for i, (col, label, filter_reason) in enumerate(candidates):
+                for i, (col, label, filter_reason, is_gps) in enumerate(candidates):
                     try:
                         if i > 0 and i % 10 == 0:
                             logger.info("Processing: %s — %d/%d", rel_path, i, n_candidates)
@@ -389,7 +448,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
                         evaluation = check_column(df[col], col, label, nrows,
                                                   file_name=os.path.basename(file_path),
                                                   provider=provider, model=model,
-                                                  test_mode=False)
+                                                  test_mode=False, gps_candidate=is_gps)
                         result_row = {
                             'file'          : rel_path,
                             'sheet'         : sheet_name or '—',
@@ -421,6 +480,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             primary_results[file_path] = file_results
 
             if results:
+                _update_metadata(files, n_data_files, n_duplicates, results)
                 save_results(results, issue_collector.issues, output_path, metadata=metadata)
 
         # --- Step 8: second pass — copy results for duplicates ---
@@ -447,18 +507,18 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             save_results(results, issue_collector.issues, central_output_path, metadata=metadata)
 
         # --- build summary ---
-        results_df = pd.DataFrame(results) if results else pd.DataFrame()
+        counts = _count_results(results, issue_collector.issues)
         summary = {
             **archive_info,
             'n_files_total' : len(files),
             'n_data_files'  : n_data_files,
             'n_duplicates'  : n_duplicates,
-            'n_checked'     : len(results_df[results_df['duplicate_of'] == '']) if not results_df.empty else 0,
-            'n_direct_pii'  : (results_df['evaluation'] == 'direct_pii').sum() if not results_df.empty else 0,
-            'n_indirect'    : (results_df['evaluation'] == 'possible_indirect').sum() if not results_df.empty else 0,
-            'n_internal_id' : (results_df['evaluation'] == 'internal_id').sum() if not results_df.empty else 0,
-            'n_warnings'    : sum(1 for i in issue_collector.issues if i['level'] == 'WARNING'),
-            'n_errors'      : sum(1 for i in issue_collector.issues if i['level'] == 'ERROR'),
+            'n_checked'     : counts['n_columns_checked'],
+            'n_direct_pii'  : counts['n_direct_pii'],
+            'n_indirect'    : counts['n_indirect'],
+            'n_internal_id' : counts['n_internal_id'],
+            'n_warnings'    : counts['n_warnings'],
+            'n_errors'      : counts['n_errors'],
             'model'         : f"{provider}/{model}",
             'version'       : __version__,
             'run_date'      : datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
@@ -564,7 +624,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     Discovers all package subfolders in folder_path, processes any row
     currently 'pending' (including one just reset from 'running'), and
     maintains a resumable overview/status file at
-    folder_path/ai_pii_results_overview.xlsx. 'done', 'skip', and the terminal
+    folder_path/pii_checker_overview.xlsx. 'done', 'skip', and the terminal
     error states below are left untouched unless a human resets them back
     to 'pending' manually.
 
@@ -592,7 +652,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     'notes' is a free-text column, never written by this function — purely
     for a human to record why a package was marked 'skip'.
     """
-    overview_path = os.path.join(folder_path, "ai_pii_results_overview.xlsx")
+    overview_path = os.path.join(folder_path, "pii_checker_overview.xlsx")
     discovered = _list_packages(folder_path)
 
     def _blank_row(package_path):
@@ -644,7 +704,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     for i, idx in enumerate(pending_indices, start=1):
         package_path = overview.at[idx, 'package_path']
         name = os.path.basename(os.path.normpath(package_path))
-        output_path = os.path.join(package_path, "ai_pii_check.xlsx")
+        output_path = os.path.join(package_path, "pii_checker_results.xlsx")
         temp_base = os.path.join(package_path, "temp_pii_scan")
         os.makedirs(temp_base, exist_ok=True)
 

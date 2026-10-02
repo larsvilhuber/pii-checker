@@ -1,6 +1,7 @@
 # Core dependencies — required for the app to run at all.
 # Install with: pip install -r requirements.txt
 chardet>=7.6.0
+global-land-mask>=1.0.0
 numpy>=2.5.2
 odfpy>=1.4.1
 openpyxl>=3.1.5

@@ -25,9 +25,12 @@ def is_platform_id_candidate(col_name: str, label: str = '') -> bool:
       - contains "mturk" but not "mturkcode"
     """
     for text in [col_name, label]:
-        if not text:
+        if text is None:
             continue
-        t = text.lower().strip()
+        # str(): column names can be integers (2-D MATLAB arrays, headerless files)
+        t = str(text).lower().strip()
+        if not t:
+            continue
         if t == 'workerid':
             return True
         if 'prolific' in t:
