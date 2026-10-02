@@ -1,5 +1,7 @@
 # PII Checker
 
+Version: see [`version.py`](version.py) (`python interface.py --version`).
+
 Replication packages shared alongside published research sometimes contain personally identifiable information (PII) that was never intended for publication. PII Checker helps researchers, data editors, and repositories scan replication packages for direct PII to help mitigate such unintended disclosure before publication.
 
 This is the **local, run-it-yourself version**: a command-line tool that searches research replication packages (data files in a folder or archive) for columns that may contain PII, using an LLM to evaluate each candidate column.
@@ -116,22 +118,22 @@ Ollama needs to be running before you start the script — start it with `ollama
 
 You just need to run `interface.py` — it's an interactive command-line script, no arguments needed.
 
-- **From a terminal:** `python interface.py`
+- **From a terminal:** `python interface.py [folder] [--many] [--model [NAME]]` — giving the folder runs it as a single package with no prompts (add `--many` for a folder of packages); `--model` alone lists the models on your Ollama endpoint and lets you pick one, `--model NAME` uses that model directly; `--continue` keeps the model loaded in Ollama afterwards for a follow-up run (by default it is unloaded when the script ends, so it doesn't stay resident for other users of the endpoint)
 - **From PyCharm (or any IDE):** open the project, then right-click `interface.py` → Run
 
-On startup it verifies your LLM setup is actually working (Ollama reachable, model pulled, and a live test call succeeds) before asking anything else. If that check fails, fix the reported issue (start Ollama, pull the model, fix `config.env`, etc.) and run it again.
+By default it uses the model from `config.env`. With `--model` (and `LLM_PROVIDER=ollama`) it lists the models pulled on your Ollama endpoint and asks which one to use — press Enter to keep the one in `config.env`, or type a number/name to switch. If you switch, it asks whether to save the choice to `config.env` (permanent) or use it for this session only. It then verifies the setup is actually working (a live test call succeeds) before asking anything else. If that check fails, fix the reported issue (start Ollama, pull the model, fix `config.env`, etc.) and run it again.
 
 <h2 id="usage">Usage</h2>
 
 After the startup check, you're asked to choose a mode:
 
-**1. Single package** — point it at one folder containing a replication package (data files, possibly zipped). It unzips archives, cleans junk files, finds duplicate files, and evaluates every candidate column. Results are saved to `pii_check.xlsx` inside that folder.
+**1. Single package** — point it at one folder containing a replication package (data files, possibly zipped). It unzips archives, cleans junk files, finds duplicate files, and evaluates every candidate column. Results are saved to `ai_pii_check.xlsx` inside that folder.
 
-**2. Many packages in a folder** — point it at a folder containing multiple package subfolders (e.g. one subfolder per dataset/study). Each subfolder is processed the same way as single-package mode, with its own `pii_check.xlsx`, and results are also rolled up into `pii_results_overview.xlsx` in the parent folder.
+**2. Many packages in a folder** — point it at a folder containing multiple package subfolders (e.g. one subfolder per dataset/study). Each subfolder is processed the same way as single-package mode, with its own `ai_pii_check.xlsx`, and results are also rolled up into `ai_pii_results_overview.xlsx` in the parent folder.
 
 The overview file tracks a `status` per package (`pending`, `running`, `done`, `skip`, or an error state) plus summary counts (files found, duplicates, columns checked, and how many were flagged `direct_pii`/`possible_indirect`/`internal_id`). This makes the batch run **resumable** — if it's interrupted, just run it again and it picks up where it left off (any package left `running` is retried automatically).
 
 To re-run a package that's already finished (`done`, or any error state), manually edit its `status` cell back to `pending` and run the batch again — it'll be picked up on the next pass. To permanently exclude a package instead, set its status to `skip` and, optionally, record why in the `notes` column.
 
-Each `pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label.
+Each `ai_pii_check.xlsx` lists, per candidate column: the file/sheet/column name, its label, row count, the evaluation result, the model's one-sentence reasoning, and the value tabulation that was shown to the model — so you can audit *why* it made each call, not just trust the label. A `Metadata` sheet records how the file was produced: software version, code URL and commit, Python version, provider/model/endpoint, start/end time, file and column counts, LLM calls and token totals, and (for Ollama) the model's memory footprint on the server.
 

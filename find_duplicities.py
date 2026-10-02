@@ -1,5 +1,5 @@
 # find_duplicities.py
-# Finds duplicate files by comparing MD5 hashes.
+# Finds duplicate files by comparing SHA-256 hashes.
 # Takes a list of file paths, returns a lookup dict mapping each file to its primary (first seen) file.
 
 import hashlib
@@ -10,9 +10,9 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 
-def _md5(file_path, chunk_size=8192) -> str:
-    """Computes MD5 hash of a file."""
-    h = hashlib.md5()
+def sha256_file(file_path, chunk_size=8192) -> str:
+    """Computes the SHA-256 hex digest of a file, reading it in chunks."""
+    h = hashlib.sha256()
     with open(file_path, 'rb') as f:
         while chunk := f.read(chunk_size):
             h.update(chunk)
@@ -21,7 +21,7 @@ def _md5(file_path, chunk_size=8192) -> str:
 
 def find_duplicities(files: list) -> dict:
     """
-    Takes a list of file paths and computes MD5 for each.
+    Takes a list of file paths and computes SHA-256 for each.
     Returns a dict: {file_path: primary_path}, with exactly one entry per
     input file path:
         - If file is unique, is the primary, or couldn't be hashed:
@@ -32,14 +32,14 @@ def find_duplicities(files: list) -> dict:
 
     Also logs all duplicate groups found.
     """
-    logger.info("Computing MD5 hashes for %d file(s)...", len(files))
+    logger.info("Computing SHA-256 hashes for %d file(s)...", len(files))
 
     hash_to_files = defaultdict(list)
     lookup = {}
     for file_path in files:
         try:
-            md5 = _md5(file_path)
-            hash_to_files[md5].append(file_path)
+            digest = sha256_file(file_path)
+            hash_to_files[digest].append(file_path)
         except Exception as e:
             logger.warning("Could not hash %s: %s", file_path, e)
             lookup[file_path] = file_path
@@ -47,7 +47,7 @@ def find_duplicities(files: list) -> dict:
     # build lookup dict
     n_duplicates = 0
 
-    for md5, paths in hash_to_files.items():
+    for digest, paths in hash_to_files.items():
         primary = paths[0]
         for path in paths:
             lookup[path] = primary

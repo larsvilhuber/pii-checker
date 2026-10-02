@@ -6,10 +6,10 @@
 #   1. Single package: run_package(folder_path, output_path)
 #   2. Batch:          run_folder(folder_path) — auto-discovers package
 #                      subfolders and maintains a resumable overview/status
-#                      file (pii_results_overview.xlsx) in that folder
+#                      file (ai_pii_results_overview.xlsx) in that folder
 #
 # Pipeline per package (run_package):
-#   0. Record archive info (MD5, size) before unzipping
+#   0. Record archive info (SHA-256, size) before unzipping
 #   1. Unzip any archive files in the folder
 #   2. Clean junk files
 #   3. Build file list and find duplicates
@@ -50,7 +50,6 @@ def _check_core_packages():
 _check_core_packages()
 
 import shutil
-import hashlib
 import tempfile
 import datetime
 import time
@@ -59,9 +58,11 @@ from loader import load_data
 from column_filter import is_candidate_column
 from column_checker import check_column, sanitize_for_excel
 from unzip_package import unzip_folder, _get_handler
-from find_duplicities import find_duplicities
+from find_duplicities import find_duplicities, sha256_file
+from version import __version__
 from clean_package import clean_folder
-from llm_client import DEFAULT_PROVIDER, DEFAULT_MODEL
+from llm_client import DEFAULT_PROVIDER, DEFAULT_MODEL, OLLAMA_ENDPOINTS, reset_usage, get_usage, get_ollama_model_memory
+import platform
 
 
 # --- Issue collector — captures all warnings and errors from all modules ---
@@ -152,16 +153,8 @@ class ThroughputTracker:
             logger.warning("Could not write throughput log (file open?) — will retry on next update")
 
 
-def _md5_file(file_path, chunk_size=8192) -> str:
-    h = hashlib.md5()
-    with open(file_path, 'rb') as f:
-        while chunk := f.read(chunk_size):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _get_archive_info(folder_path) -> dict:
-    """Records MD5 and size of top-level archive files before extraction."""
+    """Records SHA-256 and size of top-level archive files before extraction."""
     archives = [
         os.path.join(folder_path, f)
         for f in os.listdir(folder_path)
@@ -170,22 +163,49 @@ def _get_archive_info(folder_path) -> dict:
         and not f.startswith('._')
     ]
 
-    names, sizes, md5s = [], [], []
+    names, sizes, digests = [], [], []
     for path in archives:
         name = os.path.basename(path)
         logger.info("Hashing archive: %s", name)
         names.append(name)
         sizes.append(round(os.path.getsize(path) / 1024 / 1024, 2))
-        md5s.append(_md5_file(path))
+        digests.append(sha256_file(path))
 
     return {
         'archive_files'    : '; '.join(names),
         'archive_sizes_mb' : '; '.join(str(s) for s in sizes),
-        'archive_md5s'     : '; '.join(md5s),
+        'archive_sha256s'  : '; '.join(digests),
     }
 
 
-def save_results(results, issues, output_path):
+def _code_info() -> dict:
+    """Returns the git remote URL (normalised to https) and current commit of
+    this checkout, so a results file records which code produced it. Fields are
+    empty when the code is not a git checkout or git is unavailable."""
+    import subprocess
+    code_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _git(*args):
+        try:
+            return subprocess.run(['git', *args], cwd=code_dir, capture_output=True,
+                                  text=True, timeout=5, check=True).stdout.strip()
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return ''
+
+    url = _git('config', '--get', 'remote.origin.url')
+    if url.startswith('git@'):                      # git@host:owner/repo.git -> https://host/owner/repo
+        url = 'https://' + url[4:].replace(':', '/', 1)
+    if url.endswith('.git'):
+        url = url[:-4]
+
+    commit = _git('rev-parse', '--short', 'HEAD')
+    if commit and _git('status', '--porcelain'):
+        commit += '+dirty'
+
+    return {'code_url': url, 'code_commit': commit}
+
+
+def save_results(results, issues, output_path, metadata=None):
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         if results:
             pd.DataFrame(results).to_excel(writer, sheet_name='Results', index=False)
@@ -194,6 +214,9 @@ def save_results(results, issues, output_path):
                 writer, sheet_name='Results', index=False)
         if issues:
             pd.DataFrame(issues).to_excel(writer, sheet_name='Issues', index=False)
+        if metadata:
+            pd.DataFrame({'key': list(metadata), 'value': list(metadata.values())}).to_excel(
+                writer, sheet_name='Metadata', index=False)
     logger.info("Results saved to %s", output_path)
 
 
@@ -217,6 +240,40 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
     if tracker is None and track_throughput:
         throughput_path = os.path.join(os.path.dirname(output_path) or '.', 'throughput_log.xlsx')
         tracker = ThroughputTracker(throughput_path)
+
+    # --- Step 0: run metadata (written to the Metadata sheet of ai_pii_check.xlsx) ---
+    reset_usage()
+    started_at = datetime.datetime.now()
+    metadata = {
+        'package_path'   : os.path.abspath(folder_path),
+        'version'        : __version__,
+        **_code_info(),
+        'python_version' : platform.python_version(),
+        'provider'       : provider,
+        'model'          : model,
+        'ollama_endpoint': OLLAMA_ENDPOINTS[0] if provider == 'ollama' and OLLAMA_ENDPOINTS else '',
+        'started'        : started_at.strftime('%Y-%m-%d %H:%M:%S'),
+        'ended'          : '',
+        'duration_s'     : '',
+    }
+    n_columns_total = 0
+    n_columns_candidate = 0
+
+    def _finalize_metadata(files, n_data_files, n_duplicates, results):
+        ended_at = datetime.datetime.now()
+        metadata['ended'] = ended_at.strftime('%Y-%m-%d %H:%M:%S')
+        metadata['duration_s'] = round((ended_at - started_at).total_seconds(), 1)
+        metadata.update({
+            'n_files_total'      : len(files),
+            'n_data_files'       : n_data_files,
+            'n_duplicates'       : n_duplicates,
+            'n_columns_total'    : n_columns_total,
+            'n_columns_candidate': n_columns_candidate,
+            'n_columns_checked'  : sum(1 for r in results if r.get('duplicate_of') == ''),
+            **get_usage(),
+        })
+        if provider == 'ollama':
+            metadata.update(get_ollama_model_memory(model))
 
     # --- Step 1: set up temp working dir ---
     temp_dir = tempfile.mkdtemp(dir=temp_base)
@@ -298,6 +355,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             for fp, sheet_name, df, labels, nrows in loaded:
 
                 candidates = []
+                n_columns_total += len(df.columns)
                 for col in df.columns:
                     try:
                         label = labels.get(col, col) if labels else col
@@ -317,6 +375,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
                         results.append(err_row)
 
                 n_candidates = len(candidates)
+                n_columns_candidate += n_candidates
                 if n_candidates == 0:
                     continue
 
@@ -362,7 +421,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             primary_results[file_path] = file_results
 
             if results:
-                save_results(results, issue_collector.issues, output_path)
+                save_results(results, issue_collector.issues, output_path, metadata=metadata)
 
         # --- Step 8: second pass — copy results for duplicates ---
         for file_path in files:
@@ -382,9 +441,10 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
                     results.append(dup_row)
 
         # --- Step 9: final save ---
-        save_results(results, issue_collector.issues, output_path)
+        _finalize_metadata(files, n_data_files, n_duplicates, results)
+        save_results(results, issue_collector.issues, output_path, metadata=metadata)
         if central_output_path:
-            save_results(results, issue_collector.issues, central_output_path)
+            save_results(results, issue_collector.issues, central_output_path, metadata=metadata)
 
         # --- build summary ---
         results_df = pd.DataFrame(results) if results else pd.DataFrame()
@@ -400,6 +460,7 @@ def run_package(folder_path, output_path, central_output_path=None, temp_base=No
             'n_warnings'    : sum(1 for i in issue_collector.issues if i['level'] == 'WARNING'),
             'n_errors'      : sum(1 for i in issue_collector.issues if i['level'] == 'ERROR'),
             'model'         : f"{provider}/{model}",
+            'version'       : __version__,
             'run_date'      : datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
             'output_path'   : output_path,
         }
@@ -489,10 +550,10 @@ def _save_overview(df, primary_path, max_fallbacks=5):
 
 
 _OVERVIEW_SUMMARY_COLUMNS = [
-    'archive_files', 'archive_sizes_mb', 'archive_md5s',
+    'archive_files', 'archive_sizes_mb', 'archive_sha256s',
     'n_files_total', 'n_data_files', 'n_duplicates', 'n_checked',
     'n_direct_pii', 'n_indirect', 'n_internal_id', 'n_warnings', 'n_errors',
-    'model', 'run_date', 'output_path',
+    'model', 'version', 'run_date', 'output_path',
 ]
 _OVERVIEW_COLUMNS = ['package_path', 'status', 'notes'] + _OVERVIEW_SUMMARY_COLUMNS
 
@@ -503,7 +564,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     Discovers all package subfolders in folder_path, processes any row
     currently 'pending' (including one just reset from 'running'), and
     maintains a resumable overview/status file at
-    folder_path/pii_results_overview.xlsx. 'done', 'skip', and the terminal
+    folder_path/ai_pii_results_overview.xlsx. 'done', 'skip', and the terminal
     error states below are left untouched unless a human resets them back
     to 'pending' manually.
 
@@ -523,15 +584,15 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
                  - terminal error states
 
     Columns: package_path, status, notes, plus every key in run_package's
-    returned summary dict (archive_files, archive_sizes_mb, archive_md5s,
+    returned summary dict (archive_files, archive_sizes_mb, archive_sha256s,
     n_files_total, n_data_files, n_duplicates, n_checked, n_direct_pii,
-    n_indirect, n_internal_id, n_warnings, n_errors, model, run_date,
+    n_indirect, n_internal_id, n_warnings, n_errors, model, version, run_date,
     output_path).
 
     'notes' is a free-text column, never written by this function — purely
     for a human to record why a package was marked 'skip'.
     """
-    overview_path = os.path.join(folder_path, "pii_results_overview.xlsx")
+    overview_path = os.path.join(folder_path, "ai_pii_results_overview.xlsx")
     discovered = _list_packages(folder_path)
 
     def _blank_row(package_path):
@@ -583,7 +644,7 @@ def run_folder(folder_path, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
     for i, idx in enumerate(pending_indices, start=1):
         package_path = overview.at[idx, 'package_path']
         name = os.path.basename(os.path.normpath(package_path))
-        output_path = os.path.join(package_path, "pii_check.xlsx")
+        output_path = os.path.join(package_path, "ai_pii_check.xlsx")
         temp_base = os.path.join(package_path, "temp_pii_scan")
         os.makedirs(temp_base, exist_ok=True)
 

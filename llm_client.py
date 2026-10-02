@@ -16,10 +16,13 @@ import re
 logger = logging.getLogger(__name__)
 
 
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.env')
+
+
 def _load_env_file(path=None):
     """Loads KEY=VALUE lines from config.env into os.environ (without overriding
     variables already set in the real environment)."""
-    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.env')
+    path = path or CONFIG_PATH
     if not os.path.exists(path):
         return
     with open(path) as f:
@@ -32,6 +35,29 @@ def _load_env_file(path=None):
 
 
 _load_env_file()
+
+
+def save_model_to_config(model: str, path: str = None) -> None:
+    """Rewrites the LLM_MODEL= line in config.env in place (comments and other
+    lines untouched); appends the line if the file has none."""
+    path = path or CONFIG_PATH
+    lines = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.readlines()
+
+    new_line = f"LLM_MODEL={model}\n"
+    for i, line in enumerate(lines):
+        if line.strip().startswith('LLM_MODEL='):
+            lines[i] = new_line
+            break
+    else:
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        lines.append(new_line)
+
+    with open(path, 'w') as f:
+        f.writelines(lines)
 
 OLLAMA_ENDPOINTS = [
     e.strip() for e in os.environ.get('OLLAMA_ENDPOINTS', 'http://localhost:11434').split(',')
@@ -73,21 +99,29 @@ def check_ollama_reachable(timeout: int = 10) -> bool:
         return False
 
 
-def check_model_available(model: str = DEFAULT_MODEL, timeout: int = 10) -> bool:
-    """Checks that the given model is actually pulled on the configured Ollama endpoint.
-    Fast — lists installed models, does not run inference."""
+def list_ollama_models(timeout: int = 10) -> list[str] | None:
+    """Returns the names of all models pulled on the configured Ollama endpoint,
+    or None if the endpoint could not be queried. Fast — does not run inference."""
     import requests
 
     if not OLLAMA_ENDPOINTS:
-        return False
+        return None
 
     endpoint = OLLAMA_ENDPOINTS[0]
     try:
         response = requests.get(f"{endpoint}/api/tags", headers={"X-API-Key": OLLAMA_API_KEY}, timeout=timeout)
         response.raise_for_status()
-        available = [m.get("name") or m.get("model") for m in response.json().get("models", [])]
+        return [m.get("name") or m.get("model") for m in response.json().get("models", [])]
     except requests.exceptions.RequestException as e:
         logger.error("Could not list models at %s: %s", endpoint, e)
+        return None
+
+
+def check_model_available(model: str = DEFAULT_MODEL, timeout: int = 10) -> bool:
+    """Checks that the given model is actually pulled on the configured Ollama endpoint.
+    Fast — lists installed models, does not run inference."""
+    available = list_ollama_models(timeout)
+    if available is None:
         return False
 
     if model in available:
@@ -95,7 +129,7 @@ def check_model_available(model: str = DEFAULT_MODEL, timeout: int = 10) -> bool
 
     logger.error(
         "Model '%s' is not pulled on %s — available models: %s",
-        model, endpoint, ", ".join(available) or "none"
+        model, OLLAMA_ENDPOINTS[0], ", ".join(available) or "none"
     )
     return False
 
@@ -138,6 +172,33 @@ def check_model_works(model: str = DEFAULT_MODEL, timeout: int = 30) -> bool:
     return True
 
 
+def unload_ollama_model(model: str = DEFAULT_MODEL, timeout: int = 30) -> bool:
+    """Asks Ollama to evict the model from memory now (keep_alive=0). Every real
+    call uses keep_alive=-1, so without this the model stays resident for
+    everyone else using the endpoint. Logs and returns False on failure — never
+    raises, since a failed unload must not fail an otherwise successful run."""
+    import requests
+
+    if not OLLAMA_ENDPOINTS:
+        return False
+
+    endpoint = OLLAMA_ENDPOINTS[0]
+    try:
+        response = requests.post(
+            f"{endpoint}/api/generate",
+            headers={"X-API-Key": OLLAMA_API_KEY},
+            json={"model": model, "keep_alive": 0},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.warning("Could not unload model '%s' at %s: %s", model, endpoint, e)
+        return False
+
+    logger.info("Model '%s' unloaded from %s", model, endpoint)
+    return True
+
+
 def check_anthropic_ready() -> bool:
     """Checks the anthropic package is installed and ANTHROPIC_API_KEY is set."""
     try:
@@ -166,6 +227,58 @@ def check_openai_ready() -> bool:
         return False
 
     return True
+
+
+# --- Usage accounting: tokens and model time across all calls since reset_usage() ---
+_usage = {'llm_calls': 0, 'llm_prompt_tokens': 0, 'llm_completion_tokens': 0, 'llm_time_s': 0.0}
+
+
+def reset_usage() -> None:
+    """Zeroes the running token/time counters (call at the start of each package)."""
+    for k in _usage:
+        _usage[k] = 0.0 if k == 'llm_time_s' else 0
+
+
+def get_usage() -> dict:
+    """Returns a copy of the running counters: llm_calls, llm_prompt_tokens,
+    llm_completion_tokens, llm_time_s (seconds spent inside the model, where
+    the provider reports it)."""
+    return {**_usage, 'llm_time_s': round(_usage['llm_time_s'], 3)}
+
+
+def _record_usage(prompt_tokens=0, completion_tokens=0, seconds=0.0) -> None:
+    _usage['llm_calls'] += 1
+    _usage['llm_prompt_tokens'] += int(prompt_tokens or 0)
+    _usage['llm_completion_tokens'] += int(completion_tokens or 0)
+    _usage['llm_time_s'] += float(seconds or 0.0)
+
+
+def get_ollama_model_memory(model: str, timeout: int = 10) -> dict:
+    """Returns {'model_memory_mb', 'model_vram_mb'} for the model as currently
+    loaded on the Ollama endpoint (from /api/ps), or empty strings if the
+    endpoint can't be queried or the model isn't loaded."""
+    import requests
+
+    empty = {'model_memory_mb': '', 'model_vram_mb': ''}
+    if not OLLAMA_ENDPOINTS:
+        return empty
+
+    endpoint = OLLAMA_ENDPOINTS[0]
+    try:
+        response = requests.get(f"{endpoint}/api/ps", headers={"X-API-Key": OLLAMA_API_KEY}, timeout=timeout)
+        response.raise_for_status()
+        loaded = response.json().get("models", [])
+    except requests.exceptions.RequestException as e:
+        logger.warning("Could not query loaded models at %s: %s", endpoint, e)
+        return empty
+
+    for m in loaded:
+        if (m.get("name") or m.get("model")) == model:
+            return {
+                'model_memory_mb': round(m.get("size", 0) / 1024 / 1024),
+                'model_vram_mb'  : round(m.get("size_vram", 0) / 1024 / 1024),
+            }
+    return empty
 
 
 def call_llm(
@@ -207,6 +320,8 @@ def _call_anthropic(prompt: str, model: str) -> str:
         messages=[{"role": "user", "content": prompt}]
     )
 
+    usage = getattr(response, 'usage', None)
+    _record_usage(getattr(usage, 'input_tokens', 0), getattr(usage, 'output_tokens', 0))
     return response.content[0].text
 
 
@@ -220,6 +335,8 @@ def _call_openai(prompt: str, model: str) -> str:
         messages=[{"role": "user", "content": prompt}]
     )
 
+    usage = getattr(response, 'usage', None)
+    _record_usage(getattr(usage, 'prompt_tokens', 0), getattr(usage, 'completion_tokens', 0))
     return response.choices[0].message.content
 
 
@@ -277,6 +394,12 @@ def _call_ollama(prompt: str, model: str) -> str:
             if OLLAMA_DEBUG:
                 logger.info("[OLLAMA DEBUG] chunk: %r", chunk)
         if data.get("done"):
+            # final chunk carries the token counts and model timings (ns)
+            _record_usage(
+                data.get("prompt_eval_count", 0),
+                data.get("eval_count", 0),
+                (data.get("prompt_eval_duration", 0) + data.get("eval_duration", 0)) / 1e9,
+            )
             if OLLAMA_DEBUG:
                 logger.info("[OLLAMA DEBUG] done. full response: %s", "".join(content_parts))
             break
