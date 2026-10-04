@@ -50,7 +50,7 @@ Archives are unpacked automatically: `.zip`, `.7z`, `.tar`, `.tar.gz`, `.tgz`, `
 Download and install Ollama from [ollama.com](https://ollama.com/download), then pull the model you plan to use:
 
 ```
-ollama pull gemma4:e4b
+ollama pull gemma4:26b-a4b-it-qat
 ```
 
 Make sure Ollama is running (it starts automatically on most installs; otherwise run `ollama serve`). You can confirm it's running and the model was pulled successfully with:
