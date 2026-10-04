@@ -59,7 +59,7 @@ Make sure Ollama is running (it starts automatically on most installs; otherwise
 ollama list
 ```
 
-The model you chose (e.g. `gemma4:e4b`) should appear in the output.
+The model you chose (e.g. `gemma4:26b-a4b-it-qat`) should appear in the output.
 
 **2. Get the code**
 
