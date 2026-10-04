@@ -50,7 +50,7 @@ Archives are unpacked automatically: `.zip`, `.7z`, `.tar`, `.tar.gz`, `.tgz`, `
 Download and install Ollama from [ollama.com](https://ollama.com/download), then pull the model you plan to use:
 
 ```
-ollama pull gemma4:26b-a4b-it-qat
+ollama pull gemma4:26b
 ```
 
 Make sure Ollama is running (it starts automatically on most installs; otherwise run `ollama serve`). You can confirm it's running and the model was pulled successfully with:
@@ -59,7 +59,7 @@ Make sure Ollama is running (it starts automatically on most installs; otherwise
 ollama list
 ```
 
-The model you chose (e.g. `gemma4:26b-a4b-it-qat`) should appear in the output.
+The model you chose (e.g. `gemma4:26b`) should appear in the output.
 
 **2. Get the code**
 
